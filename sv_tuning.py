@@ -56,11 +56,13 @@ for name, param in low_rank_model.named_parameters():
     param.requires_grad = False
     if any(nd in name for nd in ['norm', 'head', 'patch_embed', 'downsample']):
         continue
-    if 'bias' in name:
+    if 'sv' in name:
         param.requires_grad = True
         train_params += param.numel()
 
 print(f'Trainable params: {train_params}')
+
+batch_size = 200
 
 trainer = Trainer(
     model=low_rank_model,
@@ -71,9 +73,9 @@ trainer = Trainer(
     args = TrainingArguments(
         # train epochs and batch size
         num_train_epochs=50,
-        per_device_train_batch_size=240,
-        per_device_eval_batch_size=400,
-        max_steps = int(50*50000/(240*4)),
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        max_steps = int(50*50000/(batch_size*4)),
 
         # learning rate and warmup steps
         learning_rate=1e-3,
@@ -87,8 +89,8 @@ trainer = Trainer(
         report_to='tensorboard',
 
         # evaluation
-        eval_steps=30,
-        save_steps=30,
+        eval_steps=50,
+        save_steps=50,
         evaluation_strategy='steps',
         save_strategy='steps',
         save_total_limit=3,

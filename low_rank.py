@@ -2,6 +2,26 @@ import torch
 import numpy as np
 import torch.nn as nn
 
+class LowRankLinear(nn.Module):
+    def __init__(self, in_features, out_features, rank=32, bias=True):
+        super(LowRankLinear, self).__init__()
+        self.sv = nn.Parameter(torch.Tensor(rank))
+        self.weight_l = nn.Linear(in_features, rank, bias=False)
+        self.weight_r = nn.Linear(rank, out_features, bias=bias)
+
+    def init_parameters(self, sv, weight_l, weight_r, bias):
+        self.sv.data = sv
+        self.weight_l.weight.data = weight_l
+        self.weight_r.weight.data = weight_r
+        if not bias is None: 
+            self.weight_r.bias.data.copy_(bias)
+
+    def forward(self, x):
+        x = self.weight_l(x)
+        x = x * self.sv
+        x = self.weight_r(x)
+        return x
+
 
 def low_rank_approximate(mat_org: torch.tensor, rank=32):
     """ Learning a low-rank decomposition for the given matrix.
@@ -16,9 +36,9 @@ def low_rank_approximate(mat_org: torch.tensor, rank=32):
         mat_org = mat_org.cpu()
     u, s, vh = np.linalg.svd(mat_org.detach().numpy(), full_matrices=True)
 
-    s_val = np.sqrt(np.diag(s[:rank])) # half singular value
-    mat_q = torch.tensor(u[:, :rank] @ s_val)
-    mat_r = torch.tensor(s_val @ vh[:rank, :])
+    s_val = torch.tensor(s[:rank])
+    mat_q = torch.tensor(u[:, :rank])
+    mat_r = torch.tensor(vh[:rank, :])
     error = nn.functional.mse_loss(mat_q @ mat_r, mat_org)
 
     mat_q = mat_q.to(device)
@@ -26,6 +46,7 @@ def low_rank_approximate(mat_org: torch.tensor, rank=32):
 
     output = {'mat_q': mat_q,
               'mat_r': mat_r.t(),
+              'sv': s_val,
               'error': error}
     return output
 
@@ -64,26 +85,13 @@ class ModuleLowRank(object):
         rank = (shape[0] * shape[1]) // (self.compress_ratio * (shape[0] + shape[1]))
         rank = int(rank)
 
-        # Add two new Linear modules
-        module_l = nn.Linear(shape[0], rank, bias=False,)
-        module_r = nn.Linear(rank, shape[1], bias=not bias is None,)
-        module_l = module_l.to(weight.device) # for old pytorch version
-        module_r = module_r.to(weight.device) # for old pytorch version
+        lr_out = low_rank_approximate(weight.t(), rank)
+        sv, weight_l, weight_r = lr_out['sv'], lr_out['mat_q'], lr_out['mat_r']
 
-        if self.is_approximate:
-            lr_out = low_rank_approximate(weight.t(), rank)
-            weight_l, weight_r = lr_out['mat_q'], lr_out['mat_r']
+        low_rank_module = LowRankLinear(shape[0], shape[1], rank=rank, bias=not bias is None)
+        low_rank_module.init_parameters(sv, weight_l, weight_r, bias)
 
-            module_l.weight.data.copy_(weight_l.t())
-            module_r.weight.data.copy_(weight_r)
-            if not bias is None:
-                module_r.bias.data.copy_(bias)
-        else:
-            weight_l, weight_r = None, None
-
-        return {'weight_l': weight_l,
-                'weight_r': weight_r,
-                'module_rep': nn.Sequential(module_l, module_r)}
+        return {'module_rep': low_rank_module,}
 
     def __call__(self, module: nn.Module):
         copied_modules = {name: module_sub for name, module_sub in module.named_modules()}
